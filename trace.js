@@ -6,10 +6,21 @@ function debug(msg) {
   fs.writeSync(1, 'trace.js DEBUG ' + msg + '\n');
 }
 
+const MAX_DESCENDANT_DEPTH_TRAVERSAL = 10;
+const MAX_STACKS_TO_JOIN = 50;
+
 const chain = require('stack-chain');
 const asyncHook = require('async_hooks');
 
-// Contains the Trace objects of all active scopes
+// A fake CallSite which visually separates stacks from different async contexts
+const asyncContextCallSiteMarker = {
+  getFileName: () => null,
+  getLineNumber: () => 0,
+  getColumnNumber: () => 0,
+  toString: () => '____________________'
+};
+
+// Contains the Trace objects of all active async execution contexts
 const traces = new Map();
 
 //
@@ -19,7 +30,7 @@ const traces = new Map();
 chain.filter.attach(function (error, frames) {
   return frames.filter(function (callSite) {
     const name = callSite && callSite.getFileName();
-    return (!name || name !== 'async_hooks.js');
+    return name !== 'async_hooks.js' && name !== 'internal/async_hooks.js';
   });
 });
 
@@ -27,10 +38,9 @@ chain.extend.attach(function (error, frames) {
   const asyncId = asyncHook.executionAsyncId();
   const lastTrace = traces.get(asyncId);
 
-  if (DEBUG) debug(`EXTENDING ${asyncId}\n`);
-
   if (lastTrace) {
-    frames.push.apply(frames, lastTrace.getExtendedFrames());
+    if (DEBUG) debug(`EXTENDING ${asyncId}`);
+    appendExtendedFrames(frames, lastTrace);
   }
   return frames;
 });
@@ -44,6 +54,7 @@ const hooks = asyncHook.createHook({
   promiseResolve: asyncPromiseResolve
 });
 hooks.enable();
+exports.disable = () => hooks.disable();
 
 function getCallSites(skip) {
   const limit = Error.stackTraceLimit;
@@ -64,50 +75,68 @@ function equalCallSite(a, b) {
   const aLine = a.getLineNumber();
   const aColumn = a.getColumnNumber();
 
-  if (aFile === null || aLine === null || aColumn === null) {
-    return false;
-  }
-
   return (aFile === b.getFileName() &&
           aLine === b.getLineNumber() &&
           aColumn === b.getColumnNumber());
 }
 
 class Trace {
-  constructor(asyncId) {
-    this.asyncId = asyncId;
-    this.stack = getCallSites(3);
-    this.ancestors = [this];
+  constructor(asyncId, stack) {
+    this.stackMap = new Map([
+      [asyncId, stack]
+    ]);
+    this.descendants = [];
   }
 
-  recordAncestor(ancestorAsyncId) {
-    const ancestorTrace = traces.get(ancestorAsyncId);
-    if (ancestorTrace && !this.ancestors.includes(ancestorTrace)) {
-      this.ancestors.unshift(ancestorTrace);
+  recordDescendant(descendant) {
+    if (this.descendants.includes(descendant)) {
+      return;
+    }
+    this.descendants.push(descendant);
+
+    for (const subDescendant of descendant.walk()) {
+      mergeIntoStackMap(subDescendant.stackMap, this.stackMap);
+      removeOldestFromStackMap(subDescendant.stackMap);
     }
   }
 
-  walkAncestors(visited=[]) {
-    for (const ancestorTrace of this.ancestors) {
-      if (!visited.includes(ancestorTrace)) {
-        visited.push(ancestorTrace);
-        ancestorTrace.walkAncestors(visited);
+  walk(visited=[this], depth=0) {
+    if (depth > MAX_DESCENDANT_DEPTH_TRAVERSAL) {
+      return;
+    }
+    for (const trace of this.descendants) {
+      if (!visited.includes(trace)) {
+        visited.push(trace);
+        trace.walk(visited, depth + 1);
       }
     }
     return visited;
   }
+}
 
-  getExtendedFrames() {
-    const ancestors = this.walkAncestors();
-    ancestors.sort((a, b) => b.asyncId - a.asyncId);
+function mergeIntoStackMap(dest, source) {
+  for (const [key, value] of source) {
+    dest.set(key, value);
+  }
+}
 
-    if (DEBUG) debug(`ANCESTORS -> ${ancestors.map((a) => a.asyncId)}\n`);
+function removeOldestFromStackMap(stackMap) {
+  if (stackMap.size < MAX_STACKS_TO_JOIN) {
+    return;
+  }
 
-    const frames = [];
-    for (const ancestorTrace of ancestors) {
-      appendUniqueFrames(frames, ancestorTrace.stack);
+  for (const key of sort(stackMap.keys())) {
+    if (stackMap.size < MAX_STACKS_TO_JOIN) {
+      return;
     }
-    return frames;
+    stackMap.delete(key);
+  }
+}
+
+function appendExtendedFrames(frames, trace) {
+  for (const asyncId of rsort(trace.stackMap.keys())) {
+    const newFrames = trace.stackMap.get(asyncId);
+    appendUniqueFrames(frames, newFrames);
   }
 }
 
@@ -117,17 +146,30 @@ function appendUniqueFrames(frames, newFrames) {
       frames.pop();
     }
   }
+
+  frames.push(asyncContextCallSiteMarker);
   frames.push(...newFrames);
 }
 
+function sort(iterator) {
+  return Array.from(iterator).sort((a, b) => a - b);
+}
+
+function rsort(iterator) {
+  return Array.from(iterator).sort((a, b) => b - a);
+}
+
 function asyncInit(asyncId, type, triggerAsyncId, resource) {
-  const trace = new Trace(asyncId);
-  if (DEBUG) debug(`new Trace(${asyncId}) -->\n  ${trace.stack.join("\n  ")}\n`);
-
-  trace.recordAncestor(triggerAsyncId, 'asyncInit');
-  if (DEBUG) debug(`Trace(${asyncId}).recordAncestor(${triggerAsyncId}) // asyncInit`);
-
+  const stack = getCallSites(2);
+  const trace = new Trace(asyncId, stack);
   traces.set(asyncId, trace);
+  if (DEBUG) debug(`new Trace(${asyncId}, stack) -->\n  ${stack.join('\n  ')}\n`);
+
+  const ancestorTrace = traces.get(triggerAsyncId);
+  if (ancestorTrace) {
+    ancestorTrace.recordDescendant(trace, 'asyncInit');
+    if (DEBUG) debug(`Trace(${triggerAsyncId}).recordDescendant(${asyncId}) // asyncInit`);
+  }
 }
 
 function asyncDestroy(asyncId) {
@@ -135,8 +177,13 @@ function asyncDestroy(asyncId) {
 }
 
 function asyncPromiseResolve(asyncId) {
+  const triggerAsyncId = asyncHook.triggerAsyncId();
+
+  const ancestorTrace = traces.get(triggerAsyncId);
   const trace = traces.get(asyncId);
 
-  trace.recordAncestor(asyncHook.triggerAsyncId(), 'promiseResolve');
-  if (DEBUG) debug(`Trace(${asyncId}).recordAncestor(${asyncHook.triggerAsyncId()}) // promiseResolve (${asyncHook.executionAsyncId()})`);
+  if (trace && ancestorTrace) {
+    ancestorTrace.recordDescendant(trace, 'promiseResolve');
+    if (DEBUG) debug(`Trace(${triggerAsyncId}).recordAncestor(${asyncId}) // promiseResolve (${asyncHook.executionAsyncId()})`);
+  }
 }
