@@ -167,7 +167,7 @@ function asyncInit(asyncId, type, triggerAsyncId, resource) {
 
   const ancestorTrace = traces.get(triggerAsyncId);
   if (ancestorTrace) {
-    ancestorTrace.recordDescendant(trace, 'asyncInit');
+    ancestorTrace.recordDescendant(trace);
     if (DEBUG) debug(`Trace(${triggerAsyncId}).recordDescendant(${asyncId}) // asyncInit`);
   }
 }
@@ -183,7 +183,7 @@ function asyncPromiseResolve(asyncId) {
   const trace = traces.get(asyncId);
 
   if (trace && ancestorTrace) {
-    ancestorTrace.recordDescendant(trace, 'promiseResolve');
+    ancestorTrace.recordDescendant(trace);
     if (DEBUG) debug(`Trace(${triggerAsyncId}).recordAncestor(${asyncId}) // promiseResolve (${asyncHook.executionAsyncId()})`);
   }
 }
