@@ -1,5 +1,13 @@
 'use strict';
 
+const DEBUG = false;
+
+// We cannot use console.log for debugging because it would call back into our hook
+const fs = require('fs');
+function debug(msg) {
+  fs.writeSync(1, 'trace.js DEBUG ' + msg + '\n');
+}
+
 const chain = require('stack-chain');
 const asyncHook = require('async_hooks');
 
@@ -30,6 +38,9 @@ chain.extend.attach(function (error, frames) {
   const lastTrace = traces.get(asyncId);
 
   if (lastTrace) {
+    if (DEBUG) {
+      debug(`extending: ${asyncId}`);
+    }
     appendExtendedFrames(frames, lastTrace);
   }
   return frames;
@@ -118,6 +129,7 @@ function asyncInit(asyncId, type, triggerAsyncId) {
   const stack = getCallSites(2);
   const trace = new Trace(asyncId, stack);
   traces.set(asyncId, trace);
+  if (DEBUG) debug(`asyncInit ${asyncId}\n  ${stack.join('\n  ')}\n`);
 
   const ancestorTrace = traces.get(triggerAsyncId);
   if (ancestorTrace) {
@@ -126,5 +138,6 @@ function asyncInit(asyncId, type, triggerAsyncId) {
 }
 
 function asyncDestroy(asyncId) {
+  if (DEBUG) debug(`asyncDestroy ${asyncId}`);
   traces.delete(asyncId);
 }
