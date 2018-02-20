@@ -3,16 +3,11 @@
 const chain = require('stack-chain');
 const asyncHook = require('async_hooks');
 
-// Contains init asyncId of the active scope(s)
-// Because we can't know when the root scope ends, a permanent Set is keept
-// for the root scope.
-const executionScopeInits = new Set();
-let executionScopeDepth = 0;
-// Contains the call site objects of all active scopes
+// Contains the Trace objects of all active async execution contexts
 const traces = new Map();
 
 //
-// Mainiputlate stack trace
+// Manipulate stack trace
 //
 // add lastTrace to the callSite array
 chain.filter.attach(function (error, frames) {
@@ -23,8 +18,12 @@ chain.filter.attach(function (error, frames) {
 });
 
 chain.extend.attach(function (error, frames) {
-  const lastTrace = traces.get(asyncHook.executionAsyncId());
-  frames.push.apply(frames, lastTrace);
+  const asyncId = asyncHook.executionAsyncId();
+  const lastTrace = traces.get(asyncId);
+
+  if (lastTrace) {
+    appendExtendedFrames(frames, lastTrace);
+  }
   return frames;
 });
 
@@ -33,8 +32,6 @@ chain.extend.attach(function (error, frames) {
 //
 const hooks = asyncHook.createHook({
   init: asyncInit,
-  before: asyncBefore,
-  after: asyncAfter,
   destroy: asyncDestroy
 });
 hooks.enable();
@@ -68,57 +65,55 @@ function equalCallSite(a, b) {
           aColumn === b.getColumnNumber());
 }
 
-function asyncInit(asyncId, type, triggerAsyncId, resource) {
-  const trace = getCallSites(2);
+class Trace {
+  constructor(asyncId, stack) {
+    this.asyncId = asyncId;
+    this.stackMap = new Map([
+      [asyncId, stack]
+    ]);
+  }
 
-  // In cases where the trigger is in the same synchronous execution scope
-  // as this resource, the stack trace of the trigger will overlap with
-  // `trace`, this mostly happens with promises.
-  // Example:
-  //   p0 = Promise.resolve(1); // will have `root` in stack trace
-  //   p1 = p0.then(() => throw new Error('hello')); // will also have `root`
-  // The async stack trace should be: root, p0, p1
-  //
-  // To avoid (n^2) string matching, it is assumed that `Error.stackTraceLimit`
-  // hasn't changed. By this assumtion we know the current trace will go beyond
-  // the trigger trace, thus the check can be limited to trace[-1].
-  if (executionScopeInits.has(triggerAsyncId)) {
-    const parentTrace = traces.get(triggerAsyncId);
+  recordDescendant(descendant) {
+    mergeIntoStackMap(descendant.stackMap, this.stackMap);
+  }
+}
 
-    let i = parentTrace.length;
-    while(i-- && trace.length > 1) {
-      if (equalCallSite(parentTrace[i], trace[trace.length - 1])) {
-        trace.pop();
-      }
+function mergeIntoStackMap(dest, source) {
+  for (const [key, value] of source) {
+    dest.set(key, value);
+  }
+}
+
+function appendExtendedFrames(frames, trace) {
+  for (const asyncId of rsort(trace.stackMap.keys())) {
+    const newFrames = trace.stackMap.get(asyncId);
+    appendUniqueFrames(frames, newFrames);
+  }
+}
+
+function appendUniqueFrames(frames, newFrames) {
+  for (let i = 1; i <= newFrames.length && frames.length > 1; ++i) {
+    if (equalCallSite(newFrames[newFrames.length - i], frames[frames.length - 1])) {
+      frames.pop();
     }
   }
 
-  // Add all the callSites from previuse ticks
-  if (triggerAsyncId !== 0) {
-    trace.push.apply(trace, traces.get(triggerAsyncId));
-  }
+  frames.push(...newFrames);
+}
 
-  // Cut the trace so it don't contain callSites there won't be shown anyway
-  // because of Error.stackTraceLimit
-  trace.splice(Error.stackTraceLimit);
+function rsort(iterator) {
+  return Array.from(iterator).sort((a, b) => b - a);
+}
 
-  // `trace` now contains callSites from this ticks and all the ticks leading
-  // up to this event in time
+function asyncInit(asyncId, type, triggerAsyncId) {
+  const stack = getCallSites(2);
+  const trace = new Trace(asyncId, stack);
   traces.set(asyncId, trace);
 
-  // add asyncId to the list of all inits in this execution scope
-  executionScopeInits.add(asyncId);
-}
-
-function asyncBefore(asyncId) {
-  if (executionScopeDepth === 0) {
-    executionScopeInits.clear();
+  const ancestorTrace = traces.get(triggerAsyncId);
+  if (ancestorTrace) {
+    ancestorTrace.recordDescendant(trace);
   }
-  executionScopeDepth += 1;
-}
-
-function asyncAfter(asyncId) {
-  executionScopeDepth -= 1;
 }
 
 function asyncDestroy(asyncId) {
