@@ -45,6 +45,7 @@ chain.extend.attach(function (error, frames) {
   if (lastTrace) {
     if (DEBUG) {
       debug(`extending: ${asyncId}`);
+      printRootTraces();
     }
     appendExtendedFrames(frames, lastTrace);
   }
@@ -199,5 +200,53 @@ function asyncPromiseResolve(asyncId) {
 
   if (trace && ancestorTrace) {
     ancestorTrace.recordDescendant(trace);
+  }
+}
+
+// Pretty printer, for debugging only
+
+function printRootTraces() {
+  const rootAsyncIds = findRootAsyncIds();
+  for (const asyncId of rootAsyncIds) {
+    printTree(traces.get(asyncId));
+  }
+}
+
+function findRootAsyncIds() {
+  const asyncIds = new Set(traces.keys());
+  for (const trace of traces.values()) {
+    for (const notRootTrace of trace.descendants) {
+      asyncIds.delete(notRootTrace.asyncId);
+    }
+  }
+  return asyncIds;
+}
+
+function printTree(trace, indent='', isLast=true, visited=new Set()) {
+  let line = indent + '\\-' + trace.asyncId;
+
+  if (isLast) {
+    indent += ' ';
+  } else {
+    indent += '| ';
+  }
+
+  if (trace.disabled) {
+    line += ' (disabled)';
+  }
+
+  if (visited.has(trace.asyncId)) {
+    line += ' (duplicate)';
+  }
+
+  fs.writeSync(1, line + '\n');
+
+  if (visited.has(trace.asyncId)) {
+    return;
+  }
+  visited.add(trace.asyncId);
+
+  for (let i = 0; i < trace.descendants.length; ++i) {
+    printTree(trace.descendants[i], indent, i === trace.descendants.length - 1, visited);
   }
 }
