@@ -75,10 +75,6 @@ function equalCallSite(a, b) {
   const aLine = a.getLineNumber();
   const aColumn = a.getColumnNumber();
 
-  if (aFile === null || aLine === null || aColumn === null) {
-    return false;
-  }
-
   return (aFile === b.getFileName() &&
           aLine === b.getLineNumber() &&
           aColumn === b.getColumnNumber());
