@@ -3,6 +3,14 @@
 const chain = require('stack-chain');
 const asyncHook = require('async_hooks');
 
+// A fake CallSite which visually separates stacks from different async contexts
+const asyncContextCallSiteMarker = {
+  getFileName: () => null,
+  getLineNumber: () => 0,
+  getColumnNumber: () => 0,
+  toString: () => '____________________'
+};
+
 // Contains the Trace objects of all active async execution contexts
 const traces = new Map();
 
@@ -98,6 +106,7 @@ function appendUniqueFrames(frames, newFrames) {
     }
   }
 
+  frames.push(asyncContextCallSiteMarker);
   frames.push(...newFrames);
 }
 
