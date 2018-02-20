@@ -51,7 +51,8 @@ chain.extend.attach(function (error, frames) {
 //
 const hooks = asyncHook.createHook({
   init: asyncInit,
-  destroy: asyncDestroy
+  destroy: asyncDestroy,
+  promiseResolve: asyncPromiseResolve
 });
 hooks.enable();
 exports.disable = () => hooks.disable();
@@ -86,10 +87,29 @@ class Trace {
     this.stackMap = new Map([
       [asyncId, stack]
     ]);
+    this.descendants = [];
   }
 
   recordDescendant(descendant) {
-    mergeIntoStackMap(descendant.stackMap, this.stackMap);
+    if (this.descendants.includes(descendant)) {
+      return;
+    }
+
+    this.descendants.push(descendant);
+
+    for (const subDescendant of descendant.walk()) {
+      mergeIntoStackMap(subDescendant.stackMap, this.stackMap);
+    }
+  }
+
+  walk(visited=[this]) {
+    for (const trace of this.descendants) {
+      if (!visited.includes(trace)) {
+        visited.push(trace);
+        trace.walk(visited);
+      }
+    }
+    return visited;
   }
 }
 
@@ -136,4 +156,15 @@ function asyncInit(asyncId, type, triggerAsyncId) {
 function asyncDestroy(asyncId) {
   if (DEBUG) debug(`asyncDestroy ${asyncId}`);
   traces.delete(asyncId);
+}
+
+function asyncPromiseResolve(asyncId) {
+  const triggerAsyncId = asyncHook.triggerAsyncId();
+
+  const ancestorTrace = traces.get(triggerAsyncId);
+  const trace = traces.get(asyncId);
+
+  if (trace && ancestorTrace) {
+    ancestorTrace.recordDescendant(trace);
+  }
 }
