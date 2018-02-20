@@ -8,6 +8,11 @@ function debug(msg) {
   fs.writeSync(1, 'trace.js DEBUG ' + msg + '\n');
 }
 
+// Arbitrarily limit ourselves so we don't use up all memory on storing stack traces
+const MAX_DESCENDANT_COUNT = 10;
+const MAX_DESCENDANT_DEPTH_TRAVERSAL = 10;
+const MAX_STACKS_TO_JOIN = 50;
+
 const chain = require('stack-chain');
 const asyncHook = require('async_hooks');
 
@@ -88,25 +93,36 @@ class Trace {
       [asyncId, stack]
     ]);
     this.descendants = [];
+    this.disabled = false;
   }
 
   recordDescendant(descendant) {
-    if (this.descendants.includes(descendant)) {
+    if (this.disabled || this.descendants.includes(descendant)) {
       return;
     }
 
     this.descendants.push(descendant);
 
+    if (this.descendants.length >= MAX_DESCENDANT_COUNT) {
+      this.descendants = [];
+      this.disabled = true;
+      return;
+    }
+
     for (const subDescendant of descendant.walk()) {
       mergeIntoStackMap(subDescendant.stackMap, this.stackMap);
+      removeOldestFromStackMap(subDescendant.stackMap);
     }
   }
 
-  walk(visited=[this]) {
+  walk(visited=[this], depth=0) {
+    if (depth > MAX_DESCENDANT_DEPTH_TRAVERSAL) {
+      return;
+    }
     for (const trace of this.descendants) {
       if (!visited.includes(trace)) {
         visited.push(trace);
-        trace.walk(visited);
+        trace.walk(visited, depth + 1);
       }
     }
     return visited;
@@ -116,6 +132,19 @@ class Trace {
 function mergeIntoStackMap(dest, source) {
   for (const [key, value] of source) {
     dest.set(key, value);
+  }
+}
+
+function removeOldestFromStackMap(stackMap) {
+  if (stackMap.size < MAX_STACKS_TO_JOIN) {
+    return;
+  }
+
+  for (const key of sort(stackMap.keys())) {
+    if (stackMap.size < MAX_STACKS_TO_JOIN) {
+      return;
+    }
+    stackMap.delete(key);
   }
 }
 
@@ -135,6 +164,10 @@ function appendUniqueFrames(frames, newFrames) {
 
   frames.push(asyncContextCallSiteMarker);
   frames.push(...newFrames);
+}
+
+function sort(iterator) {
+  return Array.from(iterator).sort((a, b) => a - b);
 }
 
 function rsort(iterator) {
