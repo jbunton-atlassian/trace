@@ -63,6 +63,35 @@ const hooks = asyncHook.createHook({
 hooks.enable();
 exports.disable = () => hooks.disable();
 
+
+// We must take a copy of the CallSite objects to avoid retaining references to Promises.
+// If we retain a Promise reference then asyncDestroy for the Promise won't be called,
+// so we'll leak memory.
+class CallSiteCopy {
+  constructor(callSite) {
+    this._fileName = callSite.getFileName();
+    this._lineNumber = callSite.getLineNumber();
+    this._columnNumber = callSite.getColumnNumber();
+    this._toString = callSite.toString(); // TODO this is slow
+  }
+
+  getFileName() {
+    return this._fileName;
+  }
+
+  getLineNumber() {
+    return this._lineNumber;
+  }
+
+  getColumnNumber() {
+    return this._columnNumber;
+  }
+
+  toString() {
+    return this._toString;
+  }
+}
+
 function getCallSites(skip) {
   const limit = Error.stackTraceLimit;
 
@@ -74,7 +103,7 @@ function getCallSites(skip) {
   });
   Error.stackTraceLimit = limit;
 
-  return stack;
+  return stack.map((callSite) => new CallSiteCopy(callSite));
 }
 
 function equalCallSite(a, b) {
