@@ -179,7 +179,11 @@ function removeOldestFromStackMap(stackMap) {
 }
 
 function appendExtendedFrames(frames, trace) {
-  for (const asyncId of rsort(trace.stackMap.keys())) {
+  const sortedAsyncIds = rsort(trace.stackMap.keys());
+
+  if (DEBUG) debug(`extending with ${sortedAsyncIds}`);
+
+  for (const asyncId of sortedAsyncIds) {
     const newFrames = trace.stackMap.get(asyncId);
     appendUniqueFrames(frames, newFrames);
   }
@@ -260,12 +264,16 @@ function printTree(trace, indent='', isLast=true, visited=new Set()) {
     indent += '| ';
   }
 
+  if (!traces.get(trace.asyncId)) {
+    line += ' (not-root)';
+  }
+
   if (trace.disabled) {
     line += ' (disabled)';
   }
 
   if (visited.has(trace.asyncId)) {
-    line += ' (duplicate)';
+    line += ' (cycle)';
   }
 
   fs.writeSync(1, line + '\n');
