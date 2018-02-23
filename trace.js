@@ -90,7 +90,7 @@ function getCallSites(skip) {
 function filterFrames(error, frames) {
   return frames.filter((callSite) => {
     const name = callSite && callSite.getFileName();
-    return (!name || name !== 'async_hooks.js');
+    return name !== 'async_hooks.js' && name !== 'internal/async_hooks.js';
   });
 }
 
